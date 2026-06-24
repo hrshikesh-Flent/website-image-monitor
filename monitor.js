@@ -67,7 +67,12 @@ async function run() {
     await postToSlack(issues)
     console.log("Slack alert sent.")
   } else {
-    console.log("No alert sent.")
+    console.log("All images OK.")
+    await fetch(SLACK_WEBHOOK, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "✅ Website Monitor — no images missing" }),
+    })
   }
 }
 
