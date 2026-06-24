@@ -1,57 +1,19 @@
-// Fetches all active Flent properties from Webflow and checks their card images.
-// Posts to Slack only when missing or broken images are found.
-// Run via GitHub Actions on a schedule, or locally:
-//   WEBFLOW_API_TOKEN=... SLACK_MONITOR_WEBHOOK=... node monitor.js
+// Visits flent.in/homes with a headless browser and checks every property
+// card for missing or broken images. Posts to Slack only when issues are found.
 
-const WEBFLOW_API_TOKEN = process.env.WEBFLOW_API_TOKEN
+const { chromium } = require("playwright")
+
 const SLACK_WEBHOOK = process.env.SLACK_MONITOR_WEBHOOK
-const PROPERTIES_COLLECTION = "6593ed11d5ad65d107dfe7af"
 const SITE_URL = "https://flent.in"
 
-async function fetchProperties() {
-  let all = []
-  let offset = 0
-  const limit = 100
-
-  while (true) {
-    const res = await fetch(
-      `https://api.webflow.com/v2/collections/${PROPERTIES_COLLECTION}/items?limit=${limit}&offset=${offset}`,
-      {
-        headers: {
-          accept: "application/json",
-          authorization: `Bearer ${WEBFLOW_API_TOKEN}`,
-        },
-      },
-    )
-    if (!res.ok) throw new Error(`Webflow API error: ${res.status} ${res.statusText}`)
-    const data = await res.json()
-    all = all.concat(data.items ?? [])
-    if (all.length >= (data.pagination?.total ?? 0)) break
-    offset += limit
-  }
-
-  return all
-}
-
-async function checkUrl(url) {
-  try {
-    const res = await fetch(url, { method: "HEAD" })
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
-async function postToSlack(issues, checked) {
-  const lines = issues.map(
-    (i) => `• *${i.property}* — ${i.issue} (<${SITE_URL}/homes/${i.slug}|view>)`,
-  )
+async function postToSlack(issues) {
+  const lines = issues.map((i) => `• *${i.property}* — ${i.issue}`)
   const text = [
-    `🚨 *Flent Website — Missing Images Detected*`,
+    `🚨 *Flent Website — Missing Property Images*`,
     ``,
     ...lines,
     ``,
-    `_${issues.length} issue${issues.length !== 1 ? "s" : ""} found across ${checked} active properties._`,
+    `_${issues.length} issue${issues.length !== 1 ? "s" : ""} found on <${SITE_URL}/homes|flent.in/homes>_`,
   ].join("\n")
 
   const res = await fetch(SLACK_WEBHOOK, {
@@ -63,50 +25,55 @@ async function postToSlack(issues, checked) {
 }
 
 async function run() {
-  if (!WEBFLOW_API_TOKEN) throw new Error("WEBFLOW_API_TOKEN is not set")
   if (!SLACK_WEBHOOK) throw new Error("SLACK_MONITOR_WEBHOOK is not set")
 
-  console.log("Fetching properties from Webflow...")
-  const properties = await fetchProperties()
+  const browser = await chromium.launch()
+  const page = await browser.newPage()
 
-  const active = properties.filter(
-    (p) => !p.isArchived && !p.isDraft && p.fieldData?.Active,
-  )
-  console.log(`Checking ${active.length} active properties...`)
+  console.log(`Visiting ${SITE_URL}/homes ...`)
+  await page.goto(`${SITE_URL}/homes`, { waitUntil: "networkidle" })
 
-  const issues = []
+  // Find all property cards and check their images
+  const issues = await page.evaluate(() => {
+    const results = []
 
-  await Promise.all(
-    active.map(async (p) => {
-      const name = p.fieldData?.name
-      const slug = p.fieldData?.slug
-      const thumbnail = p.fieldData?.["property-thumbnail"]
-      const featured = p.fieldData?.["property-featured-photo"]
+    // Property cards are identified by the link wrapping the card
+    // Each card has a property name and an image
+    const cards = document.querySelectorAll("a[href^='/homes/']")
 
-      if (!thumbnail?.url && !featured?.url) {
-        issues.push({ property: name, slug, issue: "No card image set (thumbnail and featured photo both missing)" })
+    cards.forEach((card) => {
+      // Get property name from card text
+      const nameEl = card.querySelector("h2, h3, [class*='name'], [class*='title']")
+      const property = nameEl?.textContent?.trim() || card.href.split("/homes/")[1] || "Unknown"
+
+      const img = card.querySelector("img")
+
+      if (!img) {
+        results.push({ property, issue: "No image element found in card" })
         return
       }
 
-      if (thumbnail?.url) {
-        const ok = await checkUrl(thumbnail.url)
-        if (!ok) issues.push({ property: name, slug, issue: `Thumbnail URL broken: ${thumbnail.url}` })
+      // naturalWidth === 0 means the image failed to load or has no src
+      if (!img.src || img.src === window.location.href) {
+        results.push({ property, issue: "Image has no src" })
+      } else if (img.naturalWidth === 0) {
+        results.push({ property, issue: `Image failed to load (${img.src})` })
       }
+    })
 
-      if (featured?.url) {
-        const ok = await checkUrl(featured.url)
-        if (!ok) issues.push({ property: name, slug, issue: `Featured photo URL broken: ${featured.url}` })
-      }
-    }),
-  )
+    return results
+  })
+
+  await browser.close()
+
+  console.log(`Checked ${issues.length === 0 ? "all cards — no issues found" : `${issues.length} issue(s):`}`)
+  issues.forEach((i) => console.log(`  - ${i.property}: ${i.issue}`))
 
   if (issues.length > 0) {
-    console.log(`Found ${issues.length} issue(s) — posting to Slack...`)
-    issues.forEach((i) => console.log(`  - ${i.property}: ${i.issue}`))
-    await postToSlack(issues, active.length)
+    await postToSlack(issues)
     console.log("Slack alert sent.")
   } else {
-    console.log("All images OK. No alert sent.")
+    console.log("No alert sent.")
   }
 }
 

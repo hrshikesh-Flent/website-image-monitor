@@ -1,0 +1,12 @@
+{
+  "name": "website-image-monitor",
+  "version": "1.0.0",
+  "description": "Headless browser monitor for missing property card images on flent.in",
+  "main": "monitor.js",
+  "scripts": {
+    "start": "node monitor.js"
+  },
+  "dependencies": {
+    "playwright": "^1.45.0"
+  }
+}
