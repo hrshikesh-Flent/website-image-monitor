@@ -7,14 +7,8 @@ const SLACK_WEBHOOK = process.env.SLACK_MONITOR_WEBHOOK
 const SITE_URL = "https://flent.in"
 
 async function postToSlack(issues) {
-  const lines = issues.map((i) => `• *${i.property}* — ${i.issue}`)
-  const text = [
-    `🚨 *Flent Website — Missing Property Images*`,
-    ``,
-    ...lines,
-    ``,
-    `_${issues.length} issue${issues.length !== 1 ? "s" : ""} found on <${SITE_URL}/homes|flent.in/homes>_`,
-  ].join("\n")
+  const lines = issues.map((i) => `Website Monitoring Agent - ${i.property} - image missing`)
+  const text = lines.join("\n")
 
   const res = await fetch(SLACK_WEBHOOK, {
     method: "POST",
