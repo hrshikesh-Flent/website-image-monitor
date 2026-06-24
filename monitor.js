@@ -1,6 +1,3 @@
-// Visits flent.in/homes with a headless browser and checks every property
-// card for missing or broken images. Posts to Slack only when issues are found.
-
 const { chromium } = require("playwright")
 
 const SLACK_WEBHOOK = process.env.SLACK_MONITOR_WEBHOOK
@@ -27,31 +24,49 @@ async function run() {
   console.log(`Visiting ${SITE_URL}/homes ...`)
   await page.goto(`${SITE_URL}/homes`, { waitUntil: "networkidle" })
 
-  // Find all property cards and check their images
+  // Scroll through the full page to trigger lazy-loaded images
+  await page.evaluate(async () => {
+    await new Promise((resolve) => {
+      const distance = 400
+      const interval = setInterval(() => {
+        window.scrollBy(0, distance)
+        if (window.scrollY + window.innerHeight >= document.body.scrollHeight) {
+          clearInterval(interval)
+          resolve()
+        }
+      }, 200)
+    })
+  })
+
+  // Wait for lazy-loaded images to finish loading after scroll
+  await page.waitForLoadState("networkidle")
+
   const issues = await page.evaluate(() => {
+    const seen = new Set()
     const results = []
 
-    // Property cards are identified by the link wrapping the card
-    // Each card has a property name and an image
     const cards = document.querySelectorAll("a[href^='/homes/']")
 
     cards.forEach((card) => {
-      // Get property name from card text
-      const nameEl = card.querySelector("h2, h3, [class*='name'], [class*='title']")
-      const property = nameEl?.textContent?.trim() || card.href.split("/homes/")[1] || "Unknown"
+      // Deduplicate — same property can appear in multiple sections
+      const href = card.href
+      if (seen.has(href)) return
+      seen.add(href)
+
+      const nameEl = card.querySelector("h2, h3")
+      const property = nameEl?.textContent?.trim() || href.split("/homes/")[1] || "Unknown"
 
       const img = card.querySelector("img")
 
       if (!img) {
-        results.push({ property, issue: "No image element found in card" })
+        results.push({ property, issue: "No image element" })
         return
       }
 
-      // naturalWidth === 0 means the image failed to load or has no src
       if (!img.src || img.src === window.location.href) {
         results.push({ property, issue: "Image has no src" })
       } else if (img.naturalWidth === 0) {
-        results.push({ property, issue: `Image failed to load (${img.src})` })
+        results.push({ property, issue: "Image failed to load" })
       }
     })
 
@@ -60,19 +75,14 @@ async function run() {
 
   await browser.close()
 
-  console.log(`Checked ${issues.length === 0 ? "all cards — no issues found" : `${issues.length} issue(s):`}`)
+  console.log(`Found ${issues.length} issue(s)`)
   issues.forEach((i) => console.log(`  - ${i.property}: ${i.issue}`))
 
   if (issues.length > 0) {
     await postToSlack(issues)
     console.log("Slack alert sent.")
   } else {
-    console.log("All images OK.")
-    await fetch(SLACK_WEBHOOK, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "✅ Website Monitor — no images missing" }),
-    })
+    console.log("All images OK — no alert sent.")
   }
 }
 
